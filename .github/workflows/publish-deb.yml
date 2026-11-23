@@ -88,7 +88,7 @@ jobs:
           DEB_PATH: ${{ steps.pack.outputs.deb_path }}
         run: |
           $debName = Split-Path -Leaf $env:DEB_PATH
-          $url = "http://$($env:NEXUS_HOST):8081/repository/syspulse/deb/binary/$($env:APT_DIST)/$($env:APT_COMPONENT)/syspulse/binary/amd64/$debName"
+          $url = "http://$($env:NEXUS_HOST):8081/repository/syspulse/$debName"
           $pair = "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)"
           $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
           $basicAuth = [Convert]::ToBase64String($bytes)
