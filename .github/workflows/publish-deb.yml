@@ -93,30 +93,34 @@ jobs:
           $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
           $basicAuth = [Convert]::ToBase64String($bytes)
 
-          $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
-          $curlExe = "$env:SystemRoot\System32\curl.exe"
-          $outFile = "$env:RUNNER_TEMP\nexus_upload_out.txt"
-          if (Test-Path $outFile) { Remove-Item -Force $outFile }
+      $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
+      Add-Type -AssemblyName System.Net.Http
+      $handler = New-Object System.Net.Http.HttpClientHandler
+      $client = New-Object System.Net.Http.HttpClient($handler)
+      $authBytes = [System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)")
+      $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", [Convert]::ToBase64String($authBytes))
+      $client.DefaultRequestHeaders.ExpectContinue = $false
 
-          $httpCode = & $curlExe -s -o $outFile -w "%{http_code}" `
-            -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" `
-            -H "Expect:" `
-            -X POST `
-            -F "apt.asset=@$($env:DEB_PATH)" `
-            "$repoUrl"
+      $multipart = New-Object System.Net.Http.MultipartFormDataContent
+      $fileBytes = [System.IO.File]::ReadAllBytes($env:DEB_PATH)
+      $byteContent = New-Object System.Net.Http.ByteArrayContent(,$fileBytes)
+      $byteContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/vnd.debian.binary-package")
+      $debLeaf = Split-Path -Leaf $env:DEB_PATH
+      $multipart.Add($byteContent, "apt.asset", $debLeaf)
 
-          $exitCode = $LASTEXITCODE
-          Write-Host "Upload URL: $repoUrl"
-          Write-Host "DEB_PATH: $env:DEB_PATH"
-          Write-Host "HTTP Status: $httpCode"
-          if (Test-Path $outFile) {
-            $body = Get-Content -Raw $outFile
-            if ($body) { Write-Host "Response body: $body" }
-          }
-
-          if ($exitCode -ne 0 -or ($httpCode -ne "200" -and $httpCode -ne "201" -and $httpCode -ne "204")) {
-            exit 1
-          }
+      try {
+        $response = $client.PostAsync($repoUrl, $multipart).GetAwaiter().GetResult()
+        $httpCode = [int]$response.StatusCode
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        Write-Host "Upload URL: $repoUrl"
+        Write-Host "DEB_PATH: $env:DEB_PATH"
+        Write-Host "HTTP Status: $httpCode"
+        if ($body) { Write-Host "Response body: $body" }
+        if ($httpCode -lt 200 -or $httpCode -ge 300) { exit 1 }
+      } finally {
+        $multipart.Dispose()
+        $client.Dispose()
+      }
           $ver = $versionLine.Matches[0].Groups[1].Value
           Write-Host "Building package $pkg version $ver"
           "pkg_ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
