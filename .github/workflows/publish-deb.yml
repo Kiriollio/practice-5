@@ -72,14 +72,10 @@ jobs:
           $linuxRoot = $root -replace "\\", "/"
           $linuxDeb = $debPath -replace "\\", "/"
 
-          if (Get-Command dpkg-deb -ErrorAction SilentlyContinue) {
-            dpkg-deb --build --root-owner-group $linuxRoot $linuxDeb
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } else {
-            $workDir = (Get-Location).Path -replace "\\", "/"
-            docker run --rm -v "${workDir}:/work" -w /work ubuntu:22.04 bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dpkg-dev >/dev/null && dpkg-deb --build --root-owner-group '$linuxRoot' '$linuxDeb'"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+          $workDir = (Get-Location).Path -replace "\\", "/"
+          $pkgCmd = "chmod 0755 '$linuxRoot/DEBIAN' && chmod 0644 '$linuxRoot/DEBIAN/control' && chmod 0755 '$linuxRoot/usr/bin/$pkg' && dpkg-deb --build --root-owner-group '$linuxRoot' '$linuxDeb'"
+          docker run --rm -v "${workDir}:/work" -w /work ubuntu:22.04 bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dpkg-dev >/dev/null && $pkgCmd"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Get-Item $debPath | Select-Object Name, Length
