@@ -57,37 +57,62 @@ jobs:
 
           "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Upload .deb to Nexus (APT deploy)
-        env:
-          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-          DEB_PATH: ${{ steps.pack.outputs.deb_path }}
-        run: |
-          if (-not (Test-Path -LiteralPath $env:DEB_PATH)) {
-            Write-Host "DEB file not found: $env:DEB_PATH"
-            exit 1
-          }
-          $debName = Split-Path -Leaf $env:DEB_PATH
-          $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
-          $curlExe = "$env:SystemRoot\System32\curl.exe"
-          $respFile = Join-Path $env:RUNNER_TEMP "nexus_resp.txt"
-          if (Test-Path $respFile) { Remove-Item $respFile -Force }
+  - name: Upload .deb to Nexus (APT deploy)
+    env:
+      NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+      NEXUS_USER: ${{ secrets.NEXUS_USER }}
+      NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      DEB_PATH: ${{ steps.pack.outputs.deb_path }}
+    run: |
+      if (-not (Test-Path -LiteralPath $env:DEB_PATH)) {
+        Write-Host "DEB file not found: $env:DEB_PATH"
+        exit 1
+      }
+      $fullDebPath = (Resolve-Path -LiteralPath $env:DEB_PATH).Path
+      $bytes = [System.IO.File]::ReadAllBytes($fullDebPath)
+      if ($bytes.Length -lt 8) {
+        Write-Host "DEB file is too small: $($bytes.Length) bytes"
+        exit 1
+      }
+      $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 8)
+      Write-Host "DEB size: $($bytes.Length) bytes, header: $magic"
+      if ($magic -ne "!<arch>
+") {
+        Write-Host "Invalid .deb archive header: expected '!<arch>\\n', got ''"
+        exit 1
+      }
 
-          $httpCode = & $curlExe -sS -o $respFile -w "%{http_code}" -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" -X POST -F "apt.asset=@$env:DEB_PATH;filename=$debName;type=application/octet-stream" "$repoUrl"
-          $exitCode = $LASTEXITCODE
-          Write-Host "Upload URL: $repoUrl"
-          Write-Host "DEB_PATH: $env:DEB_PATH"
-          Write-Host "HTTP Status: $httpCode"
-          if (Test-Path $respFile) {
-            $body = Get-Content -Raw $respFile
-            if ($body) { Write-Host "Response body: $body" }
-          }
-          if ($exitCode -ne 0 -or ($httpCode -ne "200" -and $httpCode -ne "201" -and $httpCode -ne "204")) {
-            exit 1
-          }
-          Write-Host "Package $debName deployed to Nexus APT repository 'syspulse'."
+      $debName = [System.IO.Path]::GetFileName($fullDebPath)
+      $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
 
+      Add-Type -AssemblyName System.Net.Http
+      $handler = New-Object System.Net.Http.HttpClientHandler
+      $client = New-Object System.Net.Http.HttpClient($handler)
+      try {
+        $authBytes = [System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)")
+        $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", [Convert]::ToBase64String($authBytes))
+
+        $multipart = New-Object System.Net.Http.MultipartFormDataContent
+        $fileContent = New-Object System.Net.Http.ByteArrayContent(, $bytes)
+        $fileContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream")
+        $multipart.Add($fileContent, "apt.asset", $debName)
+
+        $response = $client.PostAsync($repoUrl, $multipart).GetAwaiter().GetResult()
+        $statusCode = [int]$response.StatusCode
+        $respBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        Write-Host "Upload URL: $repoUrl"
+        Write-Host "HTTP Status: $statusCode"
+        if ($respBody) { Write-Host "Response body: $respBody" }
+        if ($statusCode -lt 200 -or $statusCode -ge 300) {
+          exit 1
+        }
+        Write-Host "Package $debName deployed to Nexus APT repository 'syspulse'."
+      }
+      finally {
+        if ($multipart) { $multipart.Dispose() }
+        if ($client) { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+      }
       - name: Verify install via apt in Ubuntu container
         env:
           NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
