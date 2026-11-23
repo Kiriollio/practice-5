@@ -1,3 +1,3 @@
-﻿module syspulse
+module syspulse
 
 go 1.21
