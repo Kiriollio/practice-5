@@ -93,10 +93,28 @@ jobs:
           $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
           $basicAuth = [Convert]::ToBase64String($bytes)
 
-          Invoke-RestMethod -Method Put -Uri $url -Headers @{
-            Authorization = "Basic $basicAuth"
-            "Content-Type" = "application/vnd.debian.binary-package"
-          } -InFile $env:DEB_PATH
+          try {
+            $resp = Invoke-WebRequest -Method Put -Uri $url -Headers @{
+              Authorization = "Basic $basicAuth"
+            } -ContentType "application/vnd.debian.binary-package" -InFile $env:DEB_PATH -UseBasicParsing
+            Write-Host "HTTP Status: $($resp.StatusCode)"
+          } catch {
+            Write-Host "Request URL: $url"
+            Write-Host "DEB_PATH: $env:DEB_PATH"
+            if ($_.Exception.Response) {
+              $code = [int]$_.Exception.Response.StatusCode
+              $desc = $_.Exception.Response.StatusDescription
+              Write-Host "HTTP Error: $code $desc"
+              $stream = $_.Exception.Response.GetResponseStream()
+              if ($stream) {
+                $reader = New-Object System.IO.StreamReader($stream)
+                Write-Host "Response body: $($reader.ReadToEnd())"
+              }
+            } else {
+              Write-Host $_.Exception.Message
+            }
+            exit 1
+          }
           Write-Host "Package $debName deployed to Nexus APT repository 'syspulse'."
 
       - name: Verify install via apt in Ubuntu container
