@@ -74,7 +74,7 @@ jobs:
           $respFile = Join-Path $env:RUNNER_TEMP "nexus_resp.txt"
           if (Test-Path $respFile) { Remove-Item $respFile -Force }
 
-          $httpCode = & $curlExe -s -o $respFile -w "%{http_code}" -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" -X POST -F "apt.asset=@$env:DEB_PATH" "$repoUrl"
+          $httpCode = & $curlExe -sS -o $respFile -w "%{http_code}" -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" -X POST -F "apt.asset=@$env:DEB_PATH;filename=$debName;type=application/octet-stream" "$repoUrl"
           $exitCode = $LASTEXITCODE
           Write-Host "Upload URL: $repoUrl"
           Write-Host "DEB_PATH: $env:DEB_PATH"
