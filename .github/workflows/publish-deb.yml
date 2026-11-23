@@ -1,10 +1,10 @@
 name: Build & Publish syspulse .deb to Nexus (APT)
 
 on:
-push:
-branches:
-  - release
-workflow_dispatch:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
 
 env:
 GO_VERSION: "1.21"
@@ -12,12 +12,12 @@ APT_DIST: stable
 APT_COMPONENT: main
 
 jobs:
-build-publish-verify:
-runs-on: self-hosted
-defaults:
+  build-publish-verify:
+    runs-on: self-hosted
+    defaults:
   run:
     shell: powershell
-steps:
+    steps:
   - name: Checkout code
     uses: actions/checkout@v4
 
