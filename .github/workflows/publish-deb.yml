@@ -1,61 +1,61 @@
 name: Build & Publish syspulse .deb to Nexus (APT)
 
 on:
-  push:
-    branches: ["release"]
-  workflow_dispatch:
+push:
+branches:
+  - release
+workflow_dispatch:
 
 env:
-  GO_VERSION: "1.21"
-  APT_DIST: stable
-  APT_COMPONENT: main
+GO_VERSION: "1.21"
+APT_DIST: stable
+APT_COMPONENT: main
 
 jobs:
-  build-publish-verify:
-    runs-on: self-hosted
-    defaults:
-      run:
-        shell: powershell
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+build-publish-verify:
+runs-on: self-hosted
+defaults:
+  run:
+    shell: powershell
+steps:
+  - name: Checkout code
+    uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
+  - name: Set up Go
+    uses: actions/setup-go@v5
+    with:
+      go-version: ${{ env.GO_VERSION }}
 
-      - name: Build Go binary and package .deb
-        id: pack
-        run: |
-          $pkg = "syspulse"
-          $ver = "1.2.0"
-          New-Item -ItemType Directory -Force -Path "dist", "build/${pkg}_${ver}/DEBIAN", "build/${pkg}_${ver}/usr/bin" | Out-Null
-          go build -o "build/${pkg}_${ver}/usr/bin/$pkg" .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  - name: Build Go binary and package .deb
+    id: pack
+    run: |
+      $pkg = "syspulse"
+      $ver = "1.2.0"
+      New-Item -ItemType Directory -Force -Path "dist", "build/${pkg}_${ver}/DEBIAN", "build/${pkg}_${ver}/usr/bin" | Out-Null
+      go build -o "build/${pkg}_${ver}/usr/bin/$pkg" .
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $controlLines = @(
-            "Package: $pkg"
-            "Version: $ver"
-            "Section: utils"
-            "Priority: optional"
-            "Architecture: amd64"
-            "Maintainer: DevOps Team <devops@example.com>"
-            "Description: Lightweight CLI tool for a system health snapshot"
-            " Reads /proc and reports uptime, load average and memory info."
-            "Depends: libc6 (>= 2.17)"
-          )
-          $controlText = ($controlLines -join "`n") + "`n"
-          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllText("$PWD/build/${pkg}_${ver}/DEBIAN/control", $controlText, $utf8NoBom)
+      $control = @(
+        "Package: $pkg"
+        "Version: $ver"
+        "Section: utils"
+        "Priority: optional"
+        "Architecture: amd64"
+        "Maintainer: DevOps Team <devops@example.com>"
+        "Description: Lightweight CLI tool for a system health snapshot"
+        " Reads /proc and reports uptime, load average and memory info."
+        "Depends: libc6 (>= 2.17)"
+      ) -join "`n"
+      $utf8 = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText("$PWD/build/${pkg}_${ver}/DEBIAN/control", "$control`n", $utf8)
 
-          $debPath = "dist/${pkg}_${ver}_amd64.deb"
-          $workDir = (Get-Location).Path -replace "\\", "/"
-          $buildCmd = "chmod 0755 'build/${pkg}_${ver}/DEBIAN' && chmod 0644 'build/${pkg}_${ver}/DEBIAN/control' && chmod 0755 'build/${pkg}_${ver}/usr/bin/$pkg' && dpkg-deb --build --root-owner-group 'build/${pkg}_${ver}' '$debPath'"
-          docker run --rm -v "${workDir}:/work" -w /work ubuntu:22.04 bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dpkg-dev >/dev/null && $buildCmd"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $debPath = "dist/${pkg}_${ver}_amd64.deb"
+      $workDir = (Get-Location).Path -replace "\\", "/"
+      $inner = "chmod 0755 build/${pkg}_${ver}/DEBIAN && chmod 0644 build/${pkg}_${ver}/DEBIAN/control && chmod 0755 build/${pkg}_${ver}/usr/bin/$pkg && dpkg-deb --build --root-owner-group build/${pkg}_${ver} $debPath"
+      docker run --rm -v "${workDir}:/work" -w /work ubuntu:22.04 bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dpkg-dev >/dev/null && $inner"
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
   - name: Upload .deb to Nexus (APT deploy)
     env:
@@ -68,73 +68,49 @@ jobs:
         Write-Host "DEB file not found: $env:DEB_PATH"
         exit 1
       }
-      $fullDebPath = (Resolve-Path -LiteralPath $env:DEB_PATH).Path
-      $bytes = [System.IO.File]::ReadAllBytes($fullDebPath)
-      if ($bytes.Length -lt 8) {
-        Write-Host "DEB file is too small: $($bytes.Length) bytes"
-        exit 1
-      }
+      $fullDeb = (Resolve-Path -LiteralPath $env:DEB_PATH).Path
+      $bytes = [System.IO.File]::ReadAllBytes($fullDeb)
       $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 8)
       Write-Host "DEB size: $($bytes.Length) bytes, header: $magic"
-      if ($magic -ne "!<arch>
-") {
-        Write-Host "Invalid .deb archive header: expected !<arch>\\n"
+      if ($magic -ne "!<arch>`n") {
+        Write-Host "Invalid .deb header"
         exit 1
       }
 
-      $debName = [System.IO.Path]::GetFileName($fullDebPath)
       $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
-
       Add-Type -AssemblyName System.Net.Http
-      $handler = New-Object System.Net.Http.HttpClientHandler
-      $client = New-Object System.Net.Http.HttpClient($handler)
+      $client = New-Object System.Net.Http.HttpClient
       try {
-        $authBytes = [System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)")
-        $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", [Convert]::ToBase64String($authBytes))
-
-        $bodyContent = New-Object System.Net.Http.ByteArrayContent(, $bytes)
-        $bodyContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream")
-
-        $response = $client.PostAsync($repoUrl, $bodyContent).GetAwaiter().GetResult()
-        $statusCode = [int]$response.StatusCode
-        $respBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $auth = [Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)"))
+        $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", $auth)
+        $content = New-Object System.Net.Http.ByteArrayContent(, $bytes)
+        $content.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream")
+        $resp = $client.PostAsync($repoUrl, $content).GetAwaiter().GetResult()
+        $code = [int]$resp.StatusCode
+        $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         Write-Host "Upload URL: $repoUrl"
-        Write-Host "HTTP Status: $statusCode"
-        if ($respBody) { Write-Host "Response body: $respBody" }
-        if ($statusCode -lt 200 -or $statusCode -ge 300) {
-          exit 1
-        }
-        Write-Host "Package $debName deployed to Nexus APT repository syspulse."
+        Write-Host "HTTP Status: $code"
+        if ($body) { Write-Host "Response body: $body" }
+        if ($code -lt 200 -or $code -ge 300) { exit 1 }
       }
       finally {
-        if ($bodyContent) { $bodyContent.Dispose() }
+        if ($content) { $content.Dispose() }
         if ($client) { $client.Dispose() }
-        if ($handler) { $handler.Dispose() }
       }
-      - name: Verify install via apt in Ubuntu container
-        env:
-          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
-        run: |
-          $aptRepoLine = "deb [trusted=yes] http://$($env:NEXUS_HOST):8081/repository/syspulse/ $($env:APT_DIST) $($env:APT_COMPONENT)"
-          $verifyCmd = @"
-          set -euo pipefail
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates >/dev/null
-          echo "$aptRepoLine" > /etc/apt/sources.list.d/syspulse.list
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y syspulse
-          dpkg -s syspulse | grep -E "^(Package|Version|Architecture)"
-          syspulse --version
-          syspulse
-          "@
-          docker run --rm ubuntu:22.04 bash -lc $verifyCmd
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Host "Verification passed: syspulse installed from Nexus and runs correctly."
 
-      - name: Save .deb as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: syspulse-deb
-          path: dist/*.deb
-          retention-days: 7
+  - name: Verify install via apt in Ubuntu container
+    env:
+      NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+    run: |
+      $line = "deb [trusted=yes] http://$($env:NEXUS_HOST):8081/repository/syspulse/ $($env:APT_DIST) $($env:APT_COMPONENT)"
+      $cmd = "set -euo pipefail && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates >/dev/null && echo '$line' > /etc/apt/sources.list.d/syspulse.list && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y syspulse && dpkg -s syspulse && syspulse --version && syspulse"
+      docker run --rm ubuntu:22.04 bash -lc $cmd
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  - name: Save .deb as artifact
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: syspulse-deb
+      path: dist/*.deb
+      retention-days: 7
