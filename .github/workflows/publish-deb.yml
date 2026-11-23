@@ -80,43 +80,51 @@ jobs:
           "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Get-Item $debPath | Select-Object Name, Length
 
-      - name: Upload .deb to Nexus (APT deploy)
-        env:
-          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-          DEB_PATH: ${{ steps.pack.outputs.deb_path }}
-        run: |
-          $debName = Split-Path -Leaf $env:DEB_PATH
-          $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
+  - name: Upload .deb to Nexus (APT deploy)
+    env:
+      NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+      NEXUS_USER: ${{ secrets.NEXUS_USER }}
+      NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      DEB_PATH: ${{ steps.pack.outputs.deb_path }}
+    run: |
+      if (-not (Test-Path -LiteralPath $env:DEB_PATH)) {
+        Write-Host "DEB file not found at: $env:DEB_PATH"
+        exit 1
+      }
+      $debName = Split-Path -Leaf $env:DEB_PATH
+      $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
 
-          Add-Type -AssemblyName System.Net.Http
-          $handler = New-Object System.Net.Http.HttpClientHandler
-          $client = New-Object System.Net.Http.HttpClient($handler)
-          $authBytes = [System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)")
-          $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", [Convert]::ToBase64String($authBytes))
-          $client.DefaultRequestHeaders.ExpectContinue = $false
+      Add-Type -AssemblyName System.Net.Http
+      $handler = New-Object System.Net.Http.HttpClientHandler
+      $client = New-Object System.Net.Http.HttpClient($handler)
+      $authBytes = [System.Text.Encoding]::ASCII.GetBytes("$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)")
+      $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Basic", [Convert]::ToBase64String($authBytes))
+      $client.DefaultRequestHeaders.ExpectContinue = $false
 
-          $multipart = New-Object System.Net.Http.MultipartFormDataContent
-          $fileBytes = [System.IO.File]::ReadAllBytes($env:DEB_PATH)
-          $byteContent = New-Object System.Net.Http.ByteArrayContent(,$fileBytes)
-          $byteContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/vnd.debian.binary-package")
-          $multipart.Add($byteContent, "apt.asset", $debName)
+      $multipart = New-Object System.Net.Http.MultipartFormDataContent
+      $fileStream = [System.IO.File]::OpenRead($env:DEB_PATH)
+      $streamContent = New-Object System.Net.Http.StreamContent($fileStream)
+      $streamContent.Headers.ContentDisposition = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue("form-data")
+      $streamContent.Headers.ContentDisposition.Name = "apt.asset"
+      $streamContent.Headers.ContentDisposition.FileName = "`"$debName`""
+      $streamContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream")
+      $multipart.Add($streamContent, "apt.asset", $debName)
 
-          try {
-            $response = $client.PostAsync($repoUrl, $multipart).GetAwaiter().GetResult()
-            $httpCode = [int]$response.StatusCode
-            $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            Write-Host "Upload URL: $repoUrl"
-            Write-Host "DEB_PATH: $env:DEB_PATH"
-            Write-Host "HTTP Status: $httpCode"
-            if ($body) { Write-Host "Response body: $body" }
-            if ($httpCode -lt 200 -or $httpCode -ge 300) { exit 1 }
-            Write-Host "Package $debName deployed to Nexus APT repository 'syspulse'."
-          } finally {
-            $multipart.Dispose()
-            $client.Dispose()
-          }
+      try {
+        $response = $client.PostAsync($repoUrl, $multipart).GetAwaiter().GetResult()
+        $httpCode = [int]$response.StatusCode
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        Write-Host "Upload URL: $repoUrl"
+        Write-Host "DEB_PATH: $env:DEB_PATH"
+        Write-Host "HTTP Status: $httpCode"
+        if ($body) { Write-Host "Response body: $body" }
+        if ($httpCode -lt 200 -or $httpCode -ge 300) { exit 1 }
+        Write-Host "Package $debName deployed to Nexus APT repository 'syspulse'."
+      } finally {
+        $multipart.Dispose()
+        $fileStream.Dispose()
+        $client.Dispose()
+      }
       - name: Verify install via apt in Ubuntu container
         env:
           NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
