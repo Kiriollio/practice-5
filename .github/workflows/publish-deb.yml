@@ -93,6 +93,78 @@ jobs:
           $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
           $basicAuth = [Convert]::ToBase64String($bytes)
 
+          $repoUrl = "http://$($env:NEXUS_HOST):8081/repository/syspulse/"
+          $curlExe = "$env:SystemRoot\System32\curl.exe"
+          $outFile = "$env:RUNNER_TEMP\nexus_upload_out.txt"
+          if (Test-Path $outFile) { Remove-Item -Force $outFile }
+
+          $httpCode = & $curlExe -s -o $outFile -w "%{http_code}" `
+            -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" `
+            -X POST `
+            -F "apt.asset=@$($env:DEB_PATH)" `
+            "$repoUrl"
+
+          $exitCode = $LASTEXITCODE
+          Write-Host "Upload URL: $repoUrl"
+          Write-Host "DEB_PATH: $env:DEB_PATH"
+          Write-Host "HTTP Status: $httpCode"
+          if (Test-Path $outFile) {
+            $body = Get-Content -Raw $outFile
+            if ($body) { Write-Host "Response body: $body" }
+          }
+
+          if ($exitCode -ne 0 -or ($httpCode -ne "200" -and $httpCode -ne "201" -and $httpCode -ne "204")) {
+            exit 1
+          }
+          $ver = $versionLine.Matches[0].Groups[1].Value
+          Write-Host "Building package $pkg version $ver"
+          "pkg_ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          $root = "build/${pkg}_${ver}"
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          New-Item -ItemType Directory -Force -Path "$root/DEBIAN", "$root/usr/bin" | Out-Null
+          Copy-Item "dist/syspulse" "$root/usr/bin/$pkg" -Force
+
+          $controlLines = @(
+            "Package: $pkg"
+            "Version: $ver"
+            "Section: utils"
+            "Priority: optional"
+            "Architecture: amd64"
+            "Maintainer: DevOps Team <devops@example.com>"
+            "Description: Lightweight CLI tool for a system health snapshot"
+            " Reads /proc and reports uptime, load average and memory info."
+            "Depends: libc6 (>= 2.17)"
+          )
+          $controlContent = ($controlLines -join "`n") + "`n"
+          $noBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText("$PWD/$root/DEBIAN/control", $controlContent, $noBom)
+
+          $debPath = "dist/${pkg}_${ver}_amd64.deb"
+          $linuxRoot = $root -replace "\\", "/"
+          $linuxDeb = $debPath -replace "\\", "/"
+
+          $workDir = (Get-Location).Path -replace "\\", "/"
+          $pkgCmd = "chmod 0755 '$linuxRoot/DEBIAN' && chmod 0644 '$linuxRoot/DEBIAN/control' && chmod 0755 '$linuxRoot/usr/bin/$pkg' && dpkg-deb --build --root-owner-group '$linuxRoot' '$linuxDeb'"
+          docker run --rm -v "${workDir}:/work" -w /work ubuntu:22.04 bash -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dpkg-dev >/dev/null && $pkgCmd"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          "deb_path=$debPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Item $debPath | Select-Object Name, Length
+
+      - name: Upload .deb to Nexus (APT deploy)
+        env:
+          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+          DEB_PATH: ${{ steps.pack.outputs.deb_path }}
+        run: |
+          $debName = Split-Path -Leaf $env:DEB_PATH
+          $url = "http://$($env:NEXUS_HOST):8081/repository/syspulse/$debName"
+          $pair = "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)"
+          $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
+          $basicAuth = [Convert]::ToBase64String($bytes)
+
           try {
             $resp = Invoke-WebRequest -Method Put -Uri $url -Headers @{
               Authorization = "Basic $basicAuth"
