@@ -100,6 +100,7 @@ jobs:
 
           $httpCode = & $curlExe -s -o $outFile -w "%{http_code}" `
             -u "$($env:NEXUS_USER):$($env:NEXUS_PASSWORD)" `
+            -H "Expect:" `
             -X POST `
             -F "apt.asset=@$($env:DEB_PATH)" `
             "$repoUrl"
